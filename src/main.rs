@@ -1,4 +1,4 @@
-//#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #![warn(
 	clippy::cargo,
@@ -35,330 +35,222 @@
 	clippy::cast_sign_loss,
 	clippy::cognitive_complexity,
 	clippy::too_many_lines,
-	clippy::cast_lossless
+	clippy::cast_lossless,
+	clippy::cast_possible_wrap,
+	clippy::integer_division,
+	clippy::module_name_repetitions,
+	clippy::needless_pass_by_value
 )]
 
-use std::array::from_fn;
-use std::num::NonZeroU32;
-use std::time::Instant;
+use bevy::{core_pipeline::{bloom::BloomSettings, tonemapping::Tonemapping}, math::{vec2, vec3}, prelude::*, render::camera::ScalingMode, sprite::{MaterialMesh2dBundle, Mesh2dHandle}, window::{ExitCondition, PrimaryWindow}};
+use rand::prelude::*;
 
-use rayon_macro::parallel;
-use softbuffer::{Context, Surface};
-use tiny_skia::{Pixmap, PathBuilder, Stroke, Paint, Transform, Color, FillRule, Shader, PixmapMut, Path, BlendMode, PixmapRef, PremultipliedColorU8};
-use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent, ElementState, KeyEvent};
-use winit::event_loop::{EventLoop, DeviceEvents};
-use winit::keyboard::{Key, NamedKey};
-use winit::window::{WindowBuilder, Fullscreen, Theme, Icon};
-use ultraviolet::{Lerp, Vec2};
-
-// STEP EVERY EVENT TO MUSIC
-// INCREASE BPM TO SPEED UP GAME
-
-struct Particle {
-	pos: Vec2,
-	life: f32,
-	scale: f32,
-	opacity: u8
-}
-
-struct Grain {
-	pos: Vec2,
-	life: f32,
-	opacity: u8
-}
-
-struct Node {
-	pos: Vec2,
-	connections: Vec<Node>
-}
-
-struct Entity {
-	node: Node
-}
-
-fn circle_fits(pos: Vec2, radius: f32, pixmap: PixmapRef) -> bool {
-	let mid = Vec2 { x: pixmap.width() as f32, y: pixmap.height() as f32 } * 0.5;
-
-	(mid.x - pos.x).abs() < mid.x + radius && (mid.y - pos.y).abs() < mid.y + radius
-}
-
-fn stroke_circle(pos: Vec2, radius: f32, color: Color, pixmap: &mut PixmapMut) {
-	if circle_fits(pos, radius, pixmap.as_ref()) {
-		pixmap.stroke_path(
-			&PathBuilder::from_circle(pos.x, pos.y, radius).unwrap(),
-			&Paint { shader: Shader::SolidColor(color), ..Paint::default() },
-			&Stroke::default(),
-			Transform::identity(),
-			None
-		);
-	}
-}
-
-fn fill_circle(pos: Vec2, radius: f32, color: Color, pixmap: &mut PixmapMut) {
-	if circle_fits(pos, radius, pixmap.as_ref()) {
-		pixmap.fill_path(
-			&PathBuilder::from_circle(pos.x, pos.y, radius).unwrap(),
-			&Paint { shader: Shader::SolidColor(color), ..Paint::default() },
-			FillRule::default(),
-			Transform::identity(),
-			None
-		);
-	}
-}
-
-fn stroke_fill_path(
-	pixmap: &mut PixmapMut,
-	path: &Path,
-	stroke_paint: &Paint,
-	fill_paint: &Paint,
-	stroke: &Stroke
-) {
-	pixmap.stroke_path(
-		path,
-		stroke_paint,
-		stroke,
-		Transform::identity(),
-		None
-	);
-
-	pixmap.fill_path(
-		path,
-		fill_paint,
-		FillRule::default(),
-		Transform::identity(),
-		None
-	);
-}
+const HIGHLIGHT: Srgba = Srgba::rgb(0.7, 0.85, 0.9);
 
 fn main() {
-	let background = Color::from_rgba8(25, 25, 35, 255);
-
-	let event_loop = EventLoop::new().unwrap();
-	event_loop.listen_device_events(DeviceEvents::Never);
-
-	let window = {
-		let mut icon = Pixmap::new(32, 32).unwrap();
-
-		icon.as_mut().fill(background);
-
-		stroke_fill_path(
-			&mut icon.as_mut(),
-			&PathBuilder::from_circle(16.0, 16.0, 8.0).unwrap(),
-			&Paint {
-				shader: Shader::SolidColor(Color::from_rgba8(255, 134, 4, 255)),
-				blend_mode: BlendMode::Source,
-				..Paint::default()
-			},
-			&Paint {
-				shader: Shader::SolidColor(Color::from_rgba8(35, 35, 55, 125)),
-				..Paint::default()
-			},
-			&Stroke {
-				width: 4.0,
+	App::new()
+		.add_plugins(DefaultPlugins.set(WindowPlugin {
+			primary_window: Some(Window {
+				title: "Circles".to_string(),
 				..Default::default()
+			}),
+			exit_condition: ExitCondition::OnPrimaryClosed,
+			..Default::default()
+		}))
+		.add_systems(Startup, setup)
+		.add_systems(Update, (camera, click, particles, dust))
+		.insert_resource(ClearColor(Color::srgb(0.07, 0.07, 0.1)))
+		.init_resource::<Click>()
+		.init_resource::<WorldCursor>()
+		.run();
+}
+
+#[derive(Resource, Default)]
+struct Click(f32);
+
+#[derive(Resource, Default)]
+struct WorldCursor(Vec2);
+
+#[derive(Component)]
+struct Particle {
+	life: f32,
+	opacity: f32,
+	scale: f32
+}
+
+#[derive(Component)]
+struct Grain {
+	life: f32,
+	opacity: f32
+}
+
+fn setup(
+	mut commands: Commands,
+	mut meshes: ResMut<Assets<Mesh>>,
+	mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+	commands.spawn((
+		Camera2dBundle {
+			camera: Camera {
+				hdr: true,
+				..Default::default()
+			},
+			projection: OrthographicProjection {
+				scaling_mode: ScalingMode::AutoMin { min_width: 1.0, min_height: 1.0 },
+				far: 1.1,
+				..Default::default()
+			},
+			tonemapping: Tonemapping::TonyMcMapface,
+			..Default::default()
+		},
+		BloomSettings::default()
+	));
+
+	let mut rng = rand::thread_rng();
+
+	let annulus = Mesh2dHandle(meshes.add(Annulus::new(0.024, 0.025)));
+	let circle = Mesh2dHandle(meshes.add(Circle::new(0.005)));
+
+	let color = ColorMaterial::from(Color::from(HIGHLIGHT));
+
+	for _ in 0..512 {
+		commands.spawn((
+			MaterialMesh2dBundle {
+				mesh: annulus.clone(),
+				material: materials.add(color.clone()),
+				transform: Transform::from_xyz(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), -1.0),
+				..Default::default()
+			},
+			Particle {
+				life: rng.gen(),
+				opacity: rng.gen_range(0.15..0.8),
+				scale: rng.gen()
 			}
-		);
+		));
+	}
 
-		let w = icon.width();
-		let h = icon.height();
+	for _ in 0..512 {
+		commands.spawn((
+			MaterialMesh2dBundle {
+				mesh: circle.clone(),
+				material: materials.add(color.clone()),
+				transform: Transform::from_xyz(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), -1.0),
+				..Default::default()
+			},
+			Grain {
+				life: rng.gen(),
+				opacity: rng.gen_range(0.15..0.4)
+			}
+		));
+	}
+}
 
-		WindowBuilder::new()
-			.with_title("Game")
-			.with_inner_size(LogicalSize::new(1280, 720))
-			.with_min_inner_size(LogicalSize::new(256, 144))
-			.with_theme(Some(Theme::Dark))
-			.with_window_icon(Some(Icon::from_rgba(icon.take(), w, h).unwrap()))
-			.build(&event_loop)
-			.unwrap()
-	};
+fn click(
+	mut click: ResMut<Click>,
+	buttons: Res<ButtonInput<MouseButton>>,
+	time: Res<Time>
+) {
+	click.0 = if buttons.just_pressed(MouseButton::Left) { 1.0 } else {
+		click.0.lerp(0.0, (time.delta_seconds() * 5.0).min(1.0))
+	}
+}
 
-	window.set_cursor_visible(false);
+fn camera(
+	window: Query<&Window, With<PrimaryWindow>>,
+	mut camera: Query<&mut Transform, With<Camera>>,
+	mut world_cursor: ResMut<WorldCursor>,
+	time: Res<Time>
+) {
+	let window = window.single();
+	let cursor = window.cursor_position().map_or_else(Default::default, |cursor| (cursor - window.size() * 0.5) / window.size().min_element() * vec2(1.0, -1.0));
 
-	let mut surface = {
-		let context = unsafe { Context::new(&window) }.unwrap();
+	let mut transform = camera.single_mut();
+	let mut translation = transform.translation.xy();
 
-		unsafe { Surface::new(&context, &window) }.unwrap()
-	};
+	translation = translation.lerp(cursor.normalize_or_zero().mul_add(Vec2::splat(0.5), translation), (cursor.length() * time.delta_seconds()).min(1.0));
 
-	let size = window.inner_size();
-	let mut width_f32 = size.width as f32;
-	let mut height_f32 = size.height as f32;
-	let mut vec_size = Vec2 { x: width_f32, y: height_f32 };
+	transform.translation = translation.extend(0.0);
 
-	let mut particles: [Particle; 1000] = from_fn(|_| Particle {
-		pos: Vec2 { x: fastrand::f32() - 0.25, y: fastrand::f32() - 0.25 } * vec_size * 2.0,
-		life: fastrand::f32(),
-		scale: fastrand::f32(),
-		opacity: fastrand::u8(100..255)
-	});
+	world_cursor.0 = cursor + translation;
+}
 
-	let mut dust: [Grain; 2000] = from_fn(|_| Grain {
-		pos: Vec2 { x: fastrand::f32() - 0.25, y: fastrand::f32() - 0.25 } * vec_size * 2.0,
-		life: fastrand::f32(),
-		opacity: fastrand::u8(35..100)
-	});
+fn particles(
+	mut particles: Query<(&mut Transform, &mut Particle, &Handle<ColorMaterial>), Without<Camera>>,
+	camera: Query<&Transform, With<Camera>>,
+	mut materials: ResMut<Assets<ColorMaterial>>,
+	click: Res<Click>,
+	cursor: Res<WorldCursor>,
+	time: Res<Time>
+) {
+	let delta = time.delta_seconds();
+	let camera_pos = camera.single().translation.xy();
 
-	let mut entities: Vec<Entity> = vec![Entity {
-		node: Node {
-			pos: vec_size * 0.5,
-			connections: vec![]
+	let mut rng = rand::thread_rng();
+
+	for (mut transform, mut particle, mat_handle) in &mut particles {
+		let sub = 0.125 * delta;
+
+		if particle.life > sub {
+			particle.life -= sub;
+
+			let translation = transform.translation.xy();
+
+			let mdist = click.0.mul_add(-0.05, translation.distance(cursor.0).mul_add(1.5, 1.0)).powi(16);
+
+			let movement = vec2(rng.gen_range(-0.00005..=0.00005), rng.gen_range(-0.00005..=0.00005)) + delta * 15.0 * (translation - cursor.0).clamp(Vec2::splat(-0.01), Vec2::splat(0.01)) / mdist * (click.0 + 1.0);
+
+			transform.translation += movement.extend(0.0);
+
+			let scale = (1.0 - particle.life) * particle.scale;
+			transform.scale = vec3(scale, scale, 1.0);
+
+			*materials.get_mut(mat_handle.id()).unwrap() = Color::srgba(HIGHLIGHT.red, HIGHLIGHT.green, HIGHLIGHT.blue, particle.life * particle.opacity).into();
+		} else {
+			particle.life = 1.0;
+			particle.scale = rng.gen();
+			particle.opacity = rng.gen_range(0.15..0.8);
+
+			transform.translation = vec3(rng.gen_range(camera_pos.x - 1.0 ..= camera_pos.x + 1.0), rng.gen_range(camera_pos.y - 1.0 ..= camera_pos.y + 1.0), -1.0);
 		}
-	}];
+	}
+}
 
-	let mut mpos = Vec2 { x: 0.0, y: 0.0 };
-	let mut world = Vec2 { x: 0.0, y: 0.0 };
-	let mut click = 0.0;
+fn dust(
+	mut dust: Query<(&mut Transform, &mut Grain, &Handle<ColorMaterial>), Without<Camera>>,
+	camera: Query<&Transform, With<Camera>>,
+	mut materials: ResMut<Assets<ColorMaterial>>,
+	click: Res<Click>,
+	cursor: Res<WorldCursor>,
+	time: Res<Time>
+) {
+	let delta = time.delta_seconds();
+	let camera_pos = camera.single().translation.xy();
 
-	let now = Instant::now();
-	let mut last_elapsed = now.elapsed().as_secs_f32();
+	let mut rng = rand::thread_rng();
 
-	let mut avg = 0.0_f32;
+	for (mut transform, mut grain, mat_handle) in &mut dust {
+		let sub = 0.125 * delta;
 
-	event_loop.run(move |event, elwt| { match event {
-		Event::AboutToWait => {
-			let new_elapsed = now.elapsed().as_secs_f32();
-			let delta = new_elapsed - last_elapsed;
-			let fps = 1.0 / delta;
-			avg = avg.mul_add(29.0, fps) / 30.0;
-			println!("{avg}");
+		if grain.life > sub {
+			grain.life -= sub;
 
-			click = click.lerp(0.0, (delta * 5.0).min(1.0));
+			let translation = transform.translation.xy();
 
-			let character = &mut entities[0].node;
-			character.pos = character.pos.lerp(mpos - world, ((click + 0.1) * delta).min(1.0));
+			let mdist = click.0.mul_add(-0.05, translation.distance(cursor.0).mul_add(1.5, 1.0)).powi(16);
 
-			let mdist_x = width_f32.mul_add(0.5, -mpos.x);
-			let mdist_y = height_f32.mul_add(0.5, -mpos.y);
-			let mdist = (mdist_x.mul_add(mdist_x, mdist_y * mdist_y) / width_f32.mul_add(width_f32, height_f32 * height_f32)).sqrt();
+			let movement = vec2(rng.gen_range(-0.00005..=0.00005), rng.gen_range(-0.00005..=0.00005)) + delta * 15.0 * (translation - cursor.0).clamp(Vec2::splat(-0.01), Vec2::splat(0.01)) / mdist * (click.0 + 1.0);
 
-			world = world.lerp(world + vec_size * 0.5 - (mpos + character.pos + world) * 0.5, (mdist * delta).min(1.0));
+			transform.translation += movement.extend(0.0);
 
-			parallel!(for grain in &mut dust {
-				if grain.life > 0.0 {
-					grain.life -= 0.125 * delta;
-				} else {
-					grain.pos = Vec2 { x: fastrand::f32() - 0.25, y: fastrand::f32() - 0.25 } * vec_size * 2.0 - world;
-					grain.life = 1.0;
-					grain.opacity = fastrand::u8(35..100);
-				}
+			let scale = 1.0 - grain.life;
+			transform.scale = vec3(scale, scale, 1.0);
 
-				let mdist = click.mul_add(-0.05, 1.0 + ((grain.pos - mpos + world) / vec_size).mag()).powi(16);
-				let plr_dist = ((grain.pos - character.pos) / vec_size).mag().mul_add(0.75, 1.0).powi(16);
+			*materials.get_mut(mat_handle.id()).unwrap() = Color::srgba(HIGHLIGHT.red, HIGHLIGHT.green, HIGHLIGHT.blue, grain.life * grain.opacity).into();
+		} else {
+			grain.life = 1.0;
+			grain.opacity = rng.gen_range(0.15..0.8);
 
-				let speed = 5.0 * delta;
-
-				let min = Vec2 { x: -0.01, y: -0.01 };
-				let max = Vec2 { x: 0.01, y: 0.01 };
-
-				grain.pos += Vec2 { x: fastrand::f32() - 0.5, y: fastrand::f32() - 0.5 } * vec_size / Vec2 { x: 2560.0, y: 1440.0 } + vec_size * speed * (
-					(grain.pos - mpos + world).clamped(min, max) / mdist * (click + 1.0) +
-					(grain.pos - character.pos).clamped(min, max) / plr_dist
-				);
-			});
-
-			parallel!(for particle in &mut particles {
-				if particle.life > 0.0 {
-					particle.life -= 0.125 * delta;
-				} else {
-					particle.pos = Vec2 { x: fastrand::f32() - 0.25, y: fastrand::f32() - 0.25 } * vec_size * 2.0 - world;
-					particle.life = 1.0;
-					particle.scale = fastrand::f32();
-					particle.opacity = fastrand::u8(100..255);
-				}
-
-				let mdist = click.mul_add(-0.05, ((particle.pos - mpos + world) / vec_size).mag().mul_add(1.5, 1.0)).powi(16);
-				let plr_dist = ((particle.pos - character.pos) / vec_size).mag().mul_add(0.75, 1.0).powi(16);
-
-				let speed = 15.0 * delta;
-
-				let min = Vec2 { x: -0.01, y: -0.01 };
-				let max = Vec2 { x: 0.01, y: 0.01 };
-
-				particle.pos += Vec2 { x: fastrand::f32() - 0.5, y: fastrand::f32() - 0.5 } * vec_size / Vec2 { x: 2560.0, y: 1440.0 } + vec_size * speed * (
-					(particle.pos - mpos + world).clamped(min, max) / mdist * (click + 1.0) +
-					(particle.pos - character.pos).clamped(min, max) / plr_dist
-				);
-			});
-
-			window.request_redraw();
-			last_elapsed = new_elapsed;
-		},
-		Event::WindowEvent { event, .. } => match event {
-			WindowEvent::RedrawRequested => {
-				let mut buffer = surface.buffer_mut().unwrap();
-
-				let mut pixmap = PixmapMut::from_bytes(
-					bytemuck::cast_slice_mut(&mut buffer),
-					width_f32 as u32,
-					height_f32 as u32
-				).unwrap();
-
-				pixmap.fill(background);
-
-				for grain in &mut dust {
-					let radius = width_f32.min(height_f32) * 0.005 * (1.0 - grain.life);
-	
-					fill_circle(grain.pos + world, radius, Color::from_rgba8(173, 216, 230, (grain.opacity as f32 * grain.life) as u8), &mut pixmap);
-				}
-	
-				for particle in &mut particles {
-					let radius = width_f32.min(height_f32) * 0.025 * (1.0 - particle.life) * particle.scale;
-	
-					stroke_circle(particle.pos + world, radius, Color::from_rgba8(173, 216, 230, (particle.opacity as f32 * particle.life) as u8), &mut pixmap);
-				}
-
-				for entity in &entities {
-					let mut nodes = vec![&entity.node];
-					for node in &entity.node.connections {
-						nodes.push(node);
-					}
-	
-					for node in nodes {
-						stroke_circle(node.pos + world, width_f32.min(height_f32) * 0.05, Color::from_rgba8(173, 216, 230, 200), &mut pixmap);
-					}
-				}
-	
-				let mouse_size = width_f32.min(height_f32).mul_add(0.05, -click * 25.0).max(1.0);
-				stroke_circle(mpos, mouse_size, Color::from_rgba8(173, 216, 230, 255), &mut pixmap);
-
-				parallel!(for pix in pixmap.pixels_mut() {
-					*pix = PremultipliedColorU8::from_rgba(pix.blue(), pix.green(), pix.red(), u8::MAX).unwrap();
-				});
-
-				window.pre_present_notify();
-				buffer.present().unwrap();
-			},
-			WindowEvent::MouseInput { state: ElementState::Pressed, .. } => click = 1.0,
-			WindowEvent::CursorMoved { position, .. } => mpos = Vec2 { x: position.x as f32, y: position.y as f32 },
-			WindowEvent::KeyboardInput {
-				event: KeyEvent {
-					logical_key: Key::Named(NamedKey::F11),
-					state: ElementState::Pressed,
-					repeat: false,
-					..
-				},
-				..
-			} => window.set_fullscreen(
-				if window.fullscreen().is_none() {
-					Some(Fullscreen::Borderless(None))
-				} else {
-					None
-				}
-			),
-			WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
-				width_f32 = size.width as f32;
-				height_f32 = size.height as f32;
-				vec_size = Vec2 { x: width_f32, y: height_f32 };
-
-				surface.resize(
-					NonZeroU32::new(size.width).unwrap(),
-					NonZeroU32::new(size.height).unwrap(),
-				).unwrap();
-			},
-			WindowEvent::CloseRequested => elwt.exit(),
-			_ => ()
-		},
-		_ => ()
-	}}).unwrap();
+			transform.translation = vec3(rng.gen_range(camera_pos.x - 1.0 ..= camera_pos.x + 1.0), rng.gen_range(camera_pos.y - 1.0 ..= camera_pos.y + 1.0), -1.0);
+		}
+	}
 }
