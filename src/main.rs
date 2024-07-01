@@ -1,51 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#![warn(
-	clippy::cargo,
-	clippy::pedantic,
-	clippy::nursery,
-
-	clippy::exit,
-	clippy::filetype_is_file,
-	clippy::float_cmp_const,
-	clippy::get_unwrap,
-	clippy::integer_division,
-	clippy::mem_forget,
-	clippy::todo,
-	clippy::unimplemented,
-	clippy::unreachable,
-	clippy::verbose_file_reads,
-	clippy::unseparated_literal_suffix,
-	clippy::unneeded_field_pattern,
-	clippy::suspicious_xor_used_as_pow,
-	clippy::string_to_string,
-	clippy::rest_pat_in_fully_bound_structs,
-	clippy::ref_patterns,
-	clippy::rc_mutex,
-	clippy::format_push_string,
-	clippy::fn_to_numeric_cast_any,
-	clippy::dbg_macro
-)]
-
-#![allow(
-	clippy::cargo_common_metadata,
-	clippy::multiple_crate_versions,
-	clippy::cast_precision_loss,
-	clippy::cast_possible_truncation,
-	clippy::cast_sign_loss,
-	clippy::cognitive_complexity,
-	clippy::too_many_lines,
-	clippy::cast_lossless,
-	clippy::cast_possible_wrap,
-	clippy::integer_division,
-	clippy::module_name_repetitions,
-	clippy::needless_pass_by_value
-)]
-
 use bevy::{core_pipeline::{bloom::BloomSettings, tonemapping::Tonemapping}, math::{vec2, vec3}, prelude::*, render::camera::ScalingMode, sprite::{MaterialMesh2dBundle, Mesh2dHandle}, window::{ExitCondition, PrimaryWindow}};
 use rand::prelude::*;
 
-const HIGHLIGHT: Srgba = Srgba::rgb(0.7, 0.85, 0.9);
+const HIGHLIGHT: Color = Color::srgb(0.7, 0.85, 0.9);
 
 fn main() {
 	App::new()
@@ -87,7 +45,7 @@ struct Grain {
 fn setup(
 	mut commands: Commands,
 	mut meshes: ResMut<Assets<Mesh>>,
-	mut materials: ResMut<Assets<ColorMaterial>>,
+	mut materials: ResMut<Assets<ColorMaterial>>
 ) {
 	commands.spawn((
 		Camera2dBundle {
@@ -111,7 +69,7 @@ fn setup(
 	let annulus = Mesh2dHandle(meshes.add(Annulus::new(0.024, 0.025)));
 	let circle = Mesh2dHandle(meshes.add(Circle::new(0.005)));
 
-	let color = ColorMaterial::from(Color::from(HIGHLIGHT));
+	let color = ColorMaterial::from(HIGHLIGHT);
 
 	for _ in 0..512 {
 		commands.spawn((
@@ -161,17 +119,18 @@ fn camera(
 	mut world_cursor: ResMut<WorldCursor>,
 	time: Res<Time>
 ) {
-	let window = window.single();
-	let cursor = window.cursor_position().map_or_else(Default::default, |cursor| (cursor - window.size() * 0.5) / window.size().min_element() * vec2(1.0, -1.0));
+	if let Ok(window) = window.get_single() {
+		let cursor = window.cursor_position().map_or_else(Default::default, |cursor| (cursor - window.size() * 0.5) / window.size().min_element() * vec2(1.0, -1.0));
 
-	let mut transform = camera.single_mut();
-	let mut translation = transform.translation.xy();
+		let mut camera = camera.single_mut();
+		let mut translation = camera.translation.truncate();
 
-	translation = translation.lerp(cursor.normalize_or_zero().mul_add(Vec2::splat(0.5), translation), (cursor.length() * time.delta_seconds()).min(1.0));
+		translation = translation.lerp(cursor.normalize_or_zero().mul_add(Vec2::splat(0.5), translation), (cursor.length() * time.delta_seconds()).min(1.0));
 
-	transform.translation = translation.extend(0.0);
+		camera.translation = translation.extend(0.0);
 
-	world_cursor.0 = cursor + translation;
+		world_cursor.0 = cursor + translation;
+	}
 }
 
 fn particles(
@@ -183,7 +142,7 @@ fn particles(
 	time: Res<Time>
 ) {
 	let delta = time.delta_seconds();
-	let camera_pos = camera.single().translation.xy();
+	let camera_pos = camera.single().translation.truncate();
 
 	let mut rng = rand::thread_rng();
 
@@ -193,7 +152,7 @@ fn particles(
 		if particle.life > sub {
 			particle.life -= sub;
 
-			let translation = transform.translation.xy();
+			let translation = transform.translation.truncate();
 
 			let mdist = click.0.mul_add(-0.05, translation.distance(cursor.0).mul_add(1.5, 1.0)).powi(16);
 
@@ -204,7 +163,7 @@ fn particles(
 			let scale = (1.0 - particle.life) * particle.scale;
 			transform.scale = vec3(scale, scale, 1.0);
 
-			*materials.get_mut(mat_handle.id()).unwrap() = Color::srgba(HIGHLIGHT.red, HIGHLIGHT.green, HIGHLIGHT.blue, particle.life * particle.opacity).into();
+			*materials.get_mut(mat_handle.id()).unwrap() = HIGHLIGHT.with_alpha(particle.life * particle.opacity).into();
 		} else {
 			particle.life = 1.0;
 			particle.scale = rng.gen();
@@ -224,7 +183,7 @@ fn dust(
 	time: Res<Time>
 ) {
 	let delta = time.delta_seconds();
-	let camera_pos = camera.single().translation.xy();
+	let camera_pos = camera.single().translation.truncate();
 
 	let mut rng = rand::thread_rng();
 
@@ -234,7 +193,7 @@ fn dust(
 		if grain.life > sub {
 			grain.life -= sub;
 
-			let translation = transform.translation.xy();
+			let translation = transform.translation.truncate();
 
 			let mdist = click.0.mul_add(-0.05, translation.distance(cursor.0).mul_add(1.5, 1.0)).powi(16);
 
@@ -245,7 +204,7 @@ fn dust(
 			let scale = 1.0 - grain.life;
 			transform.scale = vec3(scale, scale, 1.0);
 
-			*materials.get_mut(mat_handle.id()).unwrap() = Color::srgba(HIGHLIGHT.red, HIGHLIGHT.green, HIGHLIGHT.blue, grain.life * grain.opacity).into();
+			*materials.get_mut(mat_handle.id()).unwrap() = HIGHLIGHT.with_alpha(grain.life * grain.opacity).into();
 		} else {
 			grain.life = 1.0;
 			grain.opacity = rng.gen_range(0.15..0.8);

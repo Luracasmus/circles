@@ -1,0 +1,8 @@
+(
+	name: "circles",
+	path: Git(
+		url: "https://github.com/Luracasmus/circles.git",
+		path: None
+	),
+	features: Default
+)
